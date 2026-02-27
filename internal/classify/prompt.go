@@ -41,6 +41,12 @@ var classifyTmpl = template.Must(template.New("classify").Parse(classifyPromptTe
 
 // BuildPrompt renders the classification prompt template with the given parameters.
 func BuildPrompt(repo string, labels []config.LabelConfig, issue github.Issue) (string, error) {
+	return BuildPromptWithCustom(repo, labels, issue, "")
+}
+
+// BuildPromptWithCustom renders the classification prompt template and appends
+// customPrompt as additional context when non-empty.
+func BuildPromptWithCustom(repo string, labels []config.LabelConfig, issue github.Issue, customPrompt string) (string, error) {
 	if repo == "" {
 		return "", fmt.Errorf("repo name is required")
 	}
@@ -60,5 +66,10 @@ func BuildPrompt(repo string, labels []config.LabelConfig, issue github.Issue) (
 	if err := classifyTmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("rendering prompt template: %w", err)
 	}
-	return buf.String(), nil
+
+	prompt := buf.String()
+	if customPrompt != "" {
+		prompt += "\n\nAdditional context:\n" + customPrompt
+	}
+	return prompt, nil
 }

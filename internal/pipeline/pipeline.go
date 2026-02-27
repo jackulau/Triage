@@ -18,14 +18,15 @@ import (
 
 // PipelineDeps holds the dependencies for the Pipeline.
 type PipelineDeps struct {
-	Poller     *github.Poller
-	Dedup      *dedup.Engine
-	Classifier *classify.Classifier
-	Notifier   notify.Notifier
-	Store      *store.DB
-	Broker     *pubsub.Broker[github.IssueEvent]
-	Labels     []config.LabelConfig
-	Logger     *slog.Logger
+	Poller      *github.Poller
+	Dedup       *dedup.Engine
+	Classifier  *classify.Classifier
+	Notifier    notify.Notifier
+	Store       *store.DB
+	Broker      *pubsub.Broker[github.IssueEvent]
+	Labels      []config.LabelConfig
+	RepoConfigs []config.RepoConfig
+	Logger      *slog.Logger
 }
 
 // Pipeline orchestrates the issue triage workflow: dedup, classify, notify.
@@ -105,6 +106,17 @@ func (p *Pipeline) ProcessSingleIssue(ctx context.Context, repo string, issue gi
 	return p.processIssue(ctx, ie, logger)
 }
 
+// findRepoConfig looks up the RepoConfig for the given full repo name (owner/repo).
+// Returns nil if no per-repo config is found.
+func (p *Pipeline) findRepoConfig(repoFullName string) *config.RepoConfig {
+	for i := range p.deps.RepoConfigs {
+		if p.deps.RepoConfigs[i].Name == repoFullName {
+			return &p.deps.RepoConfigs[i]
+		}
+	}
+	return nil
+}
+
 func (p *Pipeline) processIssue(ctx context.Context, ie github.IssueEvent, logger *slog.Logger) (*github.TriageResult, error) {
 	parts := strings.SplitN(ie.Repo, "/", 2)
 	if len(parts) != 2 {
@@ -121,15 +133,22 @@ func (p *Pipeline) processIssue(ctx context.Context, ie github.IssueEvent, logge
 		}
 	}
 
+	// Look up per-repo config overrides
+	rc := p.findRepoConfig(ie.Repo)
+
 	result := &github.TriageResult{
 		Repo:        ie.Repo,
 		IssueNumber: ie.Issue.Number,
 	}
 
-	// Step 1: Run dedup
+	// Step 1: Run dedup with optional per-repo threshold
 	var dedupResult *dedup.DedupResult
 	if p.deps.Dedup != nil {
-		dedupResult, err = p.deps.Dedup.CheckDuplicate(ctx, repo.ID, ie.Issue)
+		var thresholdOverride float32
+		if rc != nil && rc.SimilarityThreshold != nil {
+			thresholdOverride = float32(*rc.SimilarityThreshold)
+		}
+		dedupResult, err = p.deps.Dedup.CheckDuplicateWithThreshold(ctx, repo.ID, ie.Issue, thresholdOverride)
 		if err != nil {
 			logger.Warn("embedding/dedup failed, skipping dedup", "error", err)
 			// Continue to classify
@@ -138,10 +157,14 @@ func (p *Pipeline) processIssue(ctx context.Context, ie github.IssueEvent, logge
 		}
 	}
 
-	// Step 2: If not a duplicate, run classifier
+	// Step 2: If not a duplicate, run classifier with optional custom prompt
 	isDuplicate := dedupResult != nil && dedupResult.IsDuplicate
 	if !isDuplicate && p.deps.Classifier != nil && len(p.deps.Labels) > 0 {
-		classResult, err := p.deps.Classifier.Classify(ctx, ie.Repo, p.deps.Labels, ie.Issue)
+		var customPrompt string
+		if rc != nil {
+			customPrompt = rc.CustomPrompt
+		}
+		classResult, err := p.deps.Classifier.ClassifyWithCustomPrompt(ctx, ie.Repo, p.deps.Labels, ie.Issue, customPrompt)
 		if err != nil {
 			logger.Error("classification failed", "error", err)
 			// Send notification with dedup results only

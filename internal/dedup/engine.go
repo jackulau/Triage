@@ -94,6 +94,18 @@ func (e *Engine) composeText(issue github.Issue) string {
 // CheckDuplicate embeds an issue and compares it against all existing embeddings
 // in the same repo to find potential duplicates.
 func (e *Engine) CheckDuplicate(ctx context.Context, repoID int64, issue github.Issue) (*DedupResult, error) {
+	return e.CheckDuplicateWithThreshold(ctx, repoID, issue, 0)
+}
+
+// CheckDuplicateWithThreshold is like CheckDuplicate but allows overriding the
+// similarity threshold per call. If thresholdOverride is 0, the engine's
+// configured threshold is used.
+func (e *Engine) CheckDuplicateWithThreshold(ctx context.Context, repoID int64, issue github.Issue, thresholdOverride float32) (*DedupResult, error) {
+	threshold := e.threshold
+	if thresholdOverride > 0 {
+		threshold = thresholdOverride
+	}
+
 	// Compose and embed the text
 	text := e.composeText(issue)
 
@@ -131,7 +143,7 @@ func (e *Engine) CheckDuplicate(ctx context.Context, repoID int64, issue github.
 			continue // skip dimension mismatches silently
 		}
 
-		if score >= e.threshold {
+		if score >= threshold {
 			candidates = append(candidates, github.DuplicateCandidate{
 				Number: ie.Number,
 				Score:  score,

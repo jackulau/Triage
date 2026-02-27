@@ -186,13 +186,14 @@ func createPoller(c *components, owner, repo string) *github.Poller {
 // createPipeline builds a Pipeline from components.
 func createPipeline(c *components, n notify.Notifier, labels []config.LabelConfig) *pipeline.Pipeline {
 	return pipeline.New(pipeline.PipelineDeps{
-		Dedup:      c.Dedup,
-		Classifier: c.Classifier,
-		Notifier:   n,
-		Store:      c.Store,
-		Broker:     c.Broker,
-		Labels:     labels,
-		Logger:     c.Logger,
+		Dedup:       c.Dedup,
+		Classifier:  c.Classifier,
+		Notifier:    n,
+		Store:       c.Store,
+		Broker:      c.Broker,
+		Labels:      labels,
+		RepoConfigs: c.Config.Repos,
+		Logger:      c.Logger,
 	})
 }
 
