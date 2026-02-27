@@ -3,9 +3,11 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,16 +171,13 @@ func TestDiscordNotifier_Notify_Success(t *testing.T) {
 	}
 }
 
-func TestDiscordNotifier_Notify_RetryOnError(t *testing.T) {
-	attempts := 0
+func TestDiscordNotifier_Notify_HTTPError(t *testing.T) {
+	var callCount atomic.Int32
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		if attempts == 1 {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("server error"))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
+		callCount.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("bad gateway"))
 	}))
 	defer server.Close()
 
@@ -189,11 +188,129 @@ func TestDiscordNotifier_Notify_RetryOnError(t *testing.T) {
 	}
 
 	err := notifier.Notify(context.Background(), result)
-	if err != nil {
-		t.Fatalf("expected retry to succeed, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error on non-200 response")
 	}
-	if attempts != 2 {
-		t.Errorf("expected 2 attempts, got %d", attempts)
+
+	// Notifier should be called exactly once (no internal retry; callers handle retry)
+	if got := callCount.Load(); got != 1 {
+		t.Errorf("expected 1 call, got %d", got)
+	}
+}
+
+func TestDiscordNotifier_Notify_Timeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate a very slow response
+		time.Sleep(3 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	notifier := &DiscordNotifier{
+		webhookURL: server.URL,
+		client: &http.Client{
+			Timeout: 50 * time.Millisecond,
+		},
+	}
+
+	result := github.TriageResult{
+		Repo:        "owner/repo",
+		IssueNumber: 1,
+	}
+
+	err := notifier.Notify(context.Background(), result)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+}
+
+func TestDiscordNotifier_Notify_ContextCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	notifier := NewDiscordNotifier(server.URL)
+	result := github.TriageResult{
+		Repo:        "owner/repo",
+		IssueNumber: 1,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	err := notifier.Notify(ctx, result)
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+}
+
+func TestDiscordNotifier_Notify_VerifiesRequestBodyJSON(t *testing.T) {
+	var gotBody []byte
+	var gotContentType string
+	var gotMethod string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		gotMethod = r.Method
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading request body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	notifier := NewDiscordNotifier(server.URL)
+	result := github.TriageResult{
+		Repo:        "owner/repo",
+		IssueNumber: 42,
+		SuggestedLabels: []github.LabelSuggestion{
+			{Name: "bug", Confidence: 0.94},
+		},
+		Duplicates: []github.DuplicateCandidate{
+			{Number: 10, Score: 0.88},
+		},
+		Reasoning: "Looks like a bug",
+	}
+
+	err := notifier.Notify(context.Background(), result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify HTTP method
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST method, got %q", gotMethod)
+	}
+
+	// Verify Content-Type
+	if gotContentType != "application/json" {
+		t.Errorf("expected Content-Type 'application/json', got %q", gotContentType)
+	}
+
+	// Verify the body is valid JSON with correct Discord embed structure
+	var payload discordPayload
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatalf("request body is not valid discord payload JSON: %v", err)
+	}
+
+	if len(payload.Embeds) != 1 {
+		t.Fatalf("expected 1 embed, got %d", len(payload.Embeds))
+	}
+
+	embed := payload.Embeds[0]
+	if embed.Title != "#42" {
+		t.Errorf("expected title '#42', got %q", embed.Title)
+	}
+	// Should have 3 fields: Labels, Duplicates, Reasoning
+	if len(embed.Fields) != 3 {
+		t.Errorf("expected 3 fields, got %d", len(embed.Fields))
+	}
+	if embed.Footer == nil {
+		t.Error("expected non-nil footer")
 	}
 }
 
