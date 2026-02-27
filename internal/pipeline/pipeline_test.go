@@ -81,6 +81,105 @@ func (m *mockNotifier) Notify(_ context.Context, result github.TriageResult) err
 	return nil
 }
 
+// mockStore implements PipelineStore for testing without SQLite.
+type mockStore struct {
+	mu         sync.Mutex
+	repos      map[string]*store.Repo
+	nextRepoID int64
+	triageLogs []*store.TriageLog
+	createErr  error
+	getRepoErr error
+	logErr     error
+}
+
+func newMockStore() *mockStore {
+	return &mockStore{
+		repos:      make(map[string]*store.Repo),
+		nextRepoID: 1,
+	}
+}
+
+func (m *mockStore) GetRepoByOwnerRepo(owner, repo string) (*store.Repo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.getRepoErr != nil {
+		return nil, m.getRepoErr
+	}
+	key := owner + "/" + repo
+	r, ok := m.repos[key]
+	if !ok {
+		return nil, errors.New("scanning repo: no rows in result set")
+	}
+	return r, nil
+}
+
+func (m *mockStore) CreateRepo(owner, repo string) (*store.Repo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	key := owner + "/" + repo
+	r := &store.Repo{
+		ID:       m.nextRepoID,
+		Owner:    owner,
+		RepoName: repo,
+	}
+	m.nextRepoID++
+	m.repos[key] = r
+	return r, nil
+}
+
+func (m *mockStore) LogTriageAction(log *store.TriageLog) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.logErr != nil {
+		return m.logErr
+	}
+	m.triageLogs = append(m.triageLogs, log)
+	return nil
+}
+
+// mockEmbeddingStore implements dedup.EmbeddingStore for testing without SQLite.
+type mockEmbeddingStore struct {
+	mu         sync.Mutex
+	embeddings map[int64]map[int][]byte // repoID -> number -> embedding
+}
+
+func newMockEmbeddingStore() *mockEmbeddingStore {
+	return &mockEmbeddingStore{
+		embeddings: make(map[int64]map[int][]byte),
+	}
+}
+
+func (m *mockEmbeddingStore) GetEmbeddingsForRepo(repoID int64) ([]store.IssueEmbedding, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	byNumber, ok := m.embeddings[repoID]
+	if !ok {
+		return nil, nil
+	}
+	var results []store.IssueEmbedding
+	for num, emb := range byNumber {
+		results = append(results, store.IssueEmbedding{
+			Number:    num,
+			Embedding: emb,
+			Model:     "test-model",
+		})
+	}
+	return results, nil
+}
+
+func (m *mockEmbeddingStore) UpdateEmbedding(repoID int64, number int, embedding []byte, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.embeddings[repoID] == nil {
+		m.embeddings[repoID] = make(map[int][]byte)
+	}
+	m.embeddings[repoID][number] = embedding
+	return nil
+}
+
 func testLabels() []config.LabelConfig {
 	return []config.LabelConfig{
 		{Name: "bug", Description: "Something isn't working"},
@@ -89,14 +188,11 @@ func testLabels() []config.LabelConfig {
 	}
 }
 
-func setupTestPipeline(t *testing.T) (*Pipeline, *store.DB, *pubsub.Broker[github.IssueEvent], *mockEmbedder, *mockCompleter, *mockNotifier) {
+func setupTestPipeline(t *testing.T) (*Pipeline, *mockStore, *pubsub.Broker[github.IssueEvent], *mockEmbedder, *mockCompleter, *mockNotifier) {
 	t.Helper()
 
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatalf("opening test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	mockSt := newMockStore()
+	embStore := newMockEmbeddingStore()
 
 	broker := pubsub.NewBroker[github.IssueEvent]()
 
@@ -106,44 +202,29 @@ func setupTestPipeline(t *testing.T) (*Pipeline, *store.DB, *pubsub.Broker[githu
 	}
 	notifier := &mockNotifier{}
 
-	dedupEngine := dedup.NewEngine(embedder, db)
+	dedupEngine := dedup.NewEngine(embedder, embStore)
 	classifier := classify.NewClassifier(completer, 10*time.Second)
 
 	p := New(PipelineDeps{
 		Dedup:      dedupEngine,
 		Classifier: classifier,
 		Notifier:   notifier,
-		Store:      db,
+		Store:      mockSt,
 		Broker:     broker,
 		Labels:     testLabels(),
 		Logger:     slog.Default(),
 	})
 
-	return p, db, broker, embedder, completer, notifier
+	return p, mockSt, broker, embedder, completer, notifier
 }
 
 func TestPipelineProcessesNewIssue(t *testing.T) {
-	p, db, broker, _, completer, notifier := setupTestPipeline(t)
+	p, mockSt, broker, _, completer, notifier := setupTestPipeline(t)
 
 	// Create repo first
-	repo, err := db.CreateRepo("owner", "repo")
+	_, err := mockSt.CreateRepo("owner", "repo")
 	if err != nil {
 		t.Fatalf("creating repo: %v", err)
-	}
-
-	// Insert an issue in the store (required for dedup to embed)
-	err = db.UpsertIssue(&store.Issue{
-		RepoID:    repo.ID,
-		Number:    1,
-		Title:     "Test issue",
-		Body:      "Test body",
-		State:     "open",
-		Author:    "test",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("upserting issue: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -238,29 +319,16 @@ func TestPipelineIgnoresNonActionableEvents(t *testing.T) {
 }
 
 func TestPipelineHandlesEmbedderFailure(t *testing.T) {
-	p, db, broker, embedder, completer, notifier := setupTestPipeline(t)
+	p, mockSt, broker, embedder, completer, notifier := setupTestPipeline(t)
 
 	// Make embedder fail
 	embedder.mu.Lock()
 	embedder.err = errors.New("embedding service unavailable")
 	embedder.mu.Unlock()
 
-	repo, err := db.CreateRepo("owner", "repo")
+	_, err := mockSt.CreateRepo("owner", "repo")
 	if err != nil {
 		t.Fatalf("creating repo: %v", err)
-	}
-	err = db.UpsertIssue(&store.Issue{
-		RepoID:    repo.ID,
-		Number:    2,
-		Title:     "Another issue",
-		Body:      "Body text",
-		State:     "open",
-		Author:    "test",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("upserting issue: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -305,29 +373,16 @@ func TestPipelineHandlesEmbedderFailure(t *testing.T) {
 }
 
 func TestPipelineHandlesLLMFailure(t *testing.T) {
-	p, db, broker, _, completer, notifier := setupTestPipeline(t)
+	p, mockSt, broker, _, completer, notifier := setupTestPipeline(t)
 
 	// Make completer fail
 	completer.mu.Lock()
 	completer.err = errors.New("LLM service unavailable")
 	completer.mu.Unlock()
 
-	repo, err := db.CreateRepo("owner", "repo")
+	_, err := mockSt.CreateRepo("owner", "repo")
 	if err != nil {
 		t.Fatalf("creating repo: %v", err)
-	}
-	err = db.UpsertIssue(&store.Issue{
-		RepoID:    repo.ID,
-		Number:    3,
-		Title:     "Issue three",
-		Body:      "Body three",
-		State:     "open",
-		Author:    "test",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("upserting issue: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -365,29 +420,16 @@ func TestPipelineHandlesLLMFailure(t *testing.T) {
 }
 
 func TestPipelineHandlesNotificationFailure(t *testing.T) {
-	p, db, broker, _, _, notifier := setupTestPipeline(t)
+	p, mockSt, broker, _, _, notifier := setupTestPipeline(t)
 
 	// Make notifier fail
 	notifier.mu.Lock()
 	notifier.err = errors.New("notification service unavailable")
 	notifier.mu.Unlock()
 
-	repo, err := db.CreateRepo("owner", "repo")
+	_, err := mockSt.CreateRepo("owner", "repo")
 	if err != nil {
 		t.Fatalf("creating repo: %v", err)
-	}
-	err = db.UpsertIssue(&store.Issue{
-		RepoID:    repo.ID,
-		Number:    4,
-		Title:     "Issue four",
-		Body:      "Body four",
-		State:     "open",
-		Author:    "test",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("upserting issue: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -425,26 +467,11 @@ func TestPipelineHandlesNotificationFailure(t *testing.T) {
 }
 
 func TestPipelineProcessSingleIssue(t *testing.T) {
-	p, db, _, _, _, _ := setupTestPipeline(t)
+	p, mockSt, _, _, _, _ := setupTestPipeline(t)
 
-	repo, err := db.CreateRepo("owner", "repo")
+	_, err := mockSt.CreateRepo("owner", "repo")
 	if err != nil {
 		t.Fatalf("creating repo: %v", err)
-	}
-
-	// Insert the issue so dedup can find/embed it
-	err = db.UpsertIssue(&store.Issue{
-		RepoID:    repo.ID,
-		Number:    10,
-		Title:     "Check this issue",
-		Body:      "Check body",
-		State:     "open",
-		Author:    "test",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("upserting issue: %v", err)
 	}
 
 	ctx := context.Background()
@@ -464,5 +491,41 @@ func TestPipelineProcessSingleIssue(t *testing.T) {
 	}
 	if result.IssueNumber != 10 {
 		t.Errorf("expected issue 10, got %d", result.IssueNumber)
+	}
+}
+
+func TestPipelineStoreInterface(t *testing.T) {
+	// Verify that *store.DB satisfies PipelineStore interface at compile time.
+	var _ PipelineStore = (*store.DB)(nil)
+}
+
+func TestPipelineMockStoreLogsTriageAction(t *testing.T) {
+	p, mockSt, _, _, _, _ := setupTestPipeline(t)
+
+	_, err := mockSt.CreateRepo("owner", "repo")
+	if err != nil {
+		t.Fatalf("creating repo: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err = p.ProcessSingleIssue(ctx, "owner/repo", github.Issue{
+		Number: 5,
+		Title:  "Triage me",
+		Body:   "Please triage",
+		State:  "open",
+		Author: "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mockSt.mu.Lock()
+	defer mockSt.mu.Unlock()
+
+	if len(mockSt.triageLogs) == 0 {
+		t.Fatal("expected at least one triage log entry")
+	}
+	if mockSt.triageLogs[0].IssueNumber != 5 {
+		t.Errorf("expected issue number 5, got %d", mockSt.triageLogs[0].IssueNumber)
 	}
 }

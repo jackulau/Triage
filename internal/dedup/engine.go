@@ -10,6 +10,12 @@ import (
 	"github.com/jacklau/triage/internal/store"
 )
 
+// EmbeddingStore is the subset of store.Store used by the dedup engine.
+type EmbeddingStore interface {
+	GetEmbeddingsForRepo(repoID int64) ([]store.IssueEmbedding, error)
+	UpdateEmbedding(repoID int64, number int, embedding []byte, model string) error
+}
+
 const (
 	defaultThreshold     = float32(0.85)
 	defaultMaxCandidates = 3
@@ -19,7 +25,7 @@ const (
 // Engine performs duplicate detection by comparing issue embeddings.
 type Engine struct {
 	embedder      provider.Embedder
-	store         *store.DB
+	store         EmbeddingStore
 	threshold     float32
 	maxCandidates int
 	maxChars      int
@@ -50,10 +56,10 @@ func WithMaxChars(n int) Option {
 }
 
 // NewEngine creates a new dedup Engine.
-func NewEngine(embedder provider.Embedder, db *store.DB, opts ...Option) *Engine {
+func NewEngine(embedder provider.Embedder, store EmbeddingStore, opts ...Option) *Engine {
 	e := &Engine{
 		embedder:      embedder,
-		store:         db,
+		store:         store,
 		threshold:     defaultThreshold,
 		maxCandidates: defaultMaxCandidates,
 		maxChars:      defaultMaxChars,

@@ -276,6 +276,14 @@ func TestTriageLog(t *testing.T) {
 	}
 }
 
+func TestDBSatisfiesStoreInterface(t *testing.T) {
+	// Compile-time check is in store.go; this test documents the expectation.
+	var s Store = setupTestDB(t)
+	if s == nil {
+		t.Fatal("expected non-nil Store")
+	}
+}
+
 func TestTriageLogDuplicate(t *testing.T) {
 	db := setupTestDB(t)
 
