@@ -1,11 +1,11 @@
 id: github-poller
-status: pending
+status: complete
 branch: triage/github-poller
-worktree_path: null
+worktree_path: /Users/jacklau/Triage/.claude-workspace/worktrees/github-poller/worktree
 assigned_to: null
 started_at: null
-completed_at: null
-dependencies_met: false
+completed_at: 2026-02-26T12:00:00Z
+dependencies_met: true
 conflicts: []
-commit_sha: null
-tests_passing: null
+commit_sha: 4de41621c92ec47216b6771cf514e4e12f888017
+tests_passing: true
