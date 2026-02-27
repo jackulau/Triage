@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
@@ -99,7 +98,7 @@ func BuildSlackPayload(result github.TriageResult) slackPayload {
 }
 
 // Notify sends a Slack notification for the given triage result.
-// Retries once on non-2xx response.
+// Callers are expected to wrap this with retry logic if needed.
 func (s *SlackNotifier) Notify(ctx context.Context, result github.TriageResult) error {
 	payload := BuildSlackPayload(result)
 
@@ -108,16 +107,7 @@ func (s *SlackNotifier) Notify(ctx context.Context, result github.TriageResult) 
 		return fmt.Errorf("marshaling slack payload: %w", err)
 	}
 
-	err = s.post(ctx, body)
-	if err != nil {
-		log.Printf("slack notify failed, retrying: %v", err)
-		// Retry once
-		err = s.post(ctx, body)
-		if err != nil {
-			return fmt.Errorf("slack notify failed after retry: %w", err)
-		}
-	}
-	return nil
+	return s.post(ctx, body)
 }
 
 func (s *SlackNotifier) post(ctx context.Context, body []byte) error {
