@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -15,16 +16,21 @@ import (
 	gogithub "github.com/google/go-github/v60/github"
 )
 
+var checkOutput string
+
 var checkCmd = &cobra.Command{
 	Use:   "check <owner/repo#number>",
 	Short: "Check a single issue for duplicates and classification",
 	Long: `Check fetches a single issue, runs dedup detection and classification,
-and prints the results to stdout.`,
+and prints the results to stdout.
+
+Use --output json to get structured JSON output.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCheck,
 }
 
 func init() {
+	checkCmd.Flags().StringVar(&checkOutput, "output", "text", "output format: text or json")
 	rootCmd.AddCommand(checkCmd)
 }
 
@@ -118,7 +124,70 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("processing issue: %w", err)
 	}
 
-	// Print results
+	// Output results
+	if checkOutput == "json" {
+		return printCheckJSON(issue, result)
+	}
+	return printCheckText(repoFull, number, issue, result)
+}
+
+// checkResultJSON is the JSON output structure for the check command.
+type checkResultJSON struct {
+	Issue      issueJSON       `json:"issue"`
+	Duplicates []duplicateJSON `json:"duplicates"`
+	Labels     []labelJSON     `json:"labels"`
+	Reasoning  string          `json:"reasoning"`
+}
+
+type issueJSON struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+}
+
+type duplicateJSON struct {
+	Number int     `json:"number"`
+	Score  float64 `json:"score"`
+}
+
+type labelJSON struct {
+	Name       string  `json:"name"`
+	Confidence float64 `json:"confidence"`
+}
+
+func printCheckJSON(issue github.Issue, result *github.TriageResult) error {
+	out := checkResultJSON{
+		Issue: issueJSON{
+			Number: issue.Number,
+			Title:  issue.Title,
+		},
+		Duplicates: make([]duplicateJSON, 0, len(result.Duplicates)),
+		Labels:     make([]labelJSON, 0, len(result.SuggestedLabels)),
+		Reasoning:  result.Reasoning,
+	}
+
+	for _, d := range result.Duplicates {
+		out.Duplicates = append(out.Duplicates, duplicateJSON{
+			Number: d.Number,
+			Score:  float64(d.Score),
+		})
+	}
+
+	for _, l := range result.SuggestedLabels {
+		out.Labels = append(out.Labels, labelJSON{
+			Name:       l.Name,
+			Confidence: l.Confidence,
+		})
+	}
+
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling JSON: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func printCheckText(repoFull string, number int, issue github.Issue, result *github.TriageResult) error {
 	fmt.Printf("Issue: %s#%d\n", repoFull, number)
 	fmt.Printf("Title: %s\n", issue.Title)
 	fmt.Printf("State: %s\n", issue.State)
