@@ -21,7 +21,12 @@ type OpenAIEmbedder struct {
 // Supported models: "text-embedding-3-small" (1536 dims), "text-embedding-3-large" (3072 dims).
 func NewOpenAIEmbedder(apiKey, model string) *OpenAIEmbedder {
 	client := openai.NewClient(apiKey)
+	return newOpenAIEmbedderWithClient(client, model)
+}
 
+// newOpenAIEmbedderWithClient creates an OpenAIEmbedder using a pre-configured client.
+// This is useful for testing with custom HTTP transports.
+func newOpenAIEmbedderWithClient(client *openai.Client, model string) *OpenAIEmbedder {
 	var embModel openai.EmbeddingModel
 	switch model {
 	case "text-embedding-3-large":
@@ -73,10 +78,16 @@ type OpenAICompleter struct {
 // NewOpenAICompleter creates a new OpenAICompleter.
 // If model is empty, it defaults to gpt-4o-mini.
 func NewOpenAICompleter(apiKey, model string) *OpenAICompleter {
+	client := openai.NewClient(apiKey)
+	return newOpenAICompleterWithClient(client, model)
+}
+
+// newOpenAICompleterWithClient creates an OpenAICompleter using a pre-configured client.
+// This is useful for testing with custom HTTP transports.
+func newOpenAICompleterWithClient(client *openai.Client, model string) *OpenAICompleter {
 	if model == "" {
 		model = defaultOpenAIModel
 	}
-	client := openai.NewClient(apiKey)
 	return &OpenAICompleter{
 		client: client,
 		model:  model,
