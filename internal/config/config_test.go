@@ -105,8 +105,13 @@ github: {}
 	if cfg.Defaults.RequestTimeoutRaw != "30s" {
 		t.Errorf("expected default request_timeout '30s', got %q", cfg.Defaults.RequestTimeoutRaw)
 	}
-	if cfg.Store.Path != "~/.triage/triage.db" {
-		t.Errorf("expected default store path, got %q", cfg.Store.Path)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get home dir: %v", err)
+	}
+	expectedStorePath := home + "/.triage/triage.db"
+	if cfg.Store.Path != expectedStorePath {
+		t.Errorf("expected default store path %q, got %q", expectedStorePath, cfg.Store.Path)
 	}
 }
 
@@ -256,5 +261,167 @@ repos:
 	_, err := Parse([]byte(yaml))
 	if err == nil {
 		t.Error("expected validation error for repo threshold, got nil")
+	}
+}
+
+func TestExpandTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get home dir: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "tilde prefix",
+			input:    "~/.triage/triage.db",
+			expected: home + "/.triage/triage.db",
+		},
+		{
+			name:     "tilde only",
+			input:    "~",
+			expected: home,
+		},
+		{
+			name:     "absolute path unchanged",
+			input:    "/tmp/triage.db",
+			expected: "/tmp/triage.db",
+		},
+		{
+			name:     "relative path unchanged",
+			input:    "data/triage.db",
+			expected: "data/triage.db",
+		},
+		{
+			name:     "tilde in middle unchanged",
+			input:    "/some/~/path",
+			expected: "/some/~/path",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := expandTilde(tc.input)
+			if result != tc.expected {
+				t.Errorf("expandTilde(%q) = %q, want %q", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestTildeExpansionInStorePath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get home dir: %v", err)
+	}
+
+	yaml := `
+store:
+  path: "~/.triage/triage.db"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := home + "/.triage/triage.db"
+	if cfg.Store.Path != expected {
+		t.Errorf("expected store path %q, got %q", expected, cfg.Store.Path)
+	}
+}
+
+func TestAbsoluteStorePathUnchanged(t *testing.T) {
+	yaml := `
+store:
+  path: /var/data/triage.db
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Store.Path != "/var/data/triage.db" {
+		t.Errorf("expected store path '/var/data/triage.db', got %q", cfg.Store.Path)
+	}
+}
+
+func TestValidationInvalidLLMProviderType(t *testing.T) {
+	yaml := `
+providers:
+  llm:
+    type: openAI
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil {
+		t.Error("expected validation error for invalid LLM provider type 'openAI', got nil")
+	}
+}
+
+func TestValidationInvalidEmbeddingProviderType(t *testing.T) {
+	yaml := `
+providers:
+  embedding:
+    type: OpenAI
+`
+	_, err := Parse([]byte(yaml))
+	if err == nil {
+		t.Error("expected validation error for invalid embedding provider type 'OpenAI', got nil")
+	}
+}
+
+func TestValidationValidProviderTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "openai embedding and llm",
+			yaml: `
+providers:
+  embedding:
+    type: openai
+    api_key: test
+  llm:
+    type: openai
+    api_key: test
+`,
+		},
+		{
+			name: "ollama embedding and llm",
+			yaml: `
+providers:
+  embedding:
+    type: ollama
+  llm:
+    type: ollama
+`,
+		},
+		{
+			name: "anthropic llm",
+			yaml: `
+providers:
+  llm:
+    type: anthropic
+    api_key: test
+`,
+		},
+		{
+			name: "empty provider types",
+			yaml: `
+github: {}
+`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.yaml))
+			if err != nil {
+				t.Errorf("unexpected error for valid config: %v", err)
+			}
+		})
 	}
 }

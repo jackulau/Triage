@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -171,6 +172,21 @@ func applyDefaults(cfg *Config) {
 	if cfg.Store.Path == "" {
 		cfg.Store.Path = "~/.triage/triage.db"
 	}
+
+	// Expand ~ to user's home directory in store path
+	cfg.Store.Path = expandTilde(cfg.Store.Path)
+}
+
+// expandTilde replaces a leading ~ with the user's home directory.
+func expandTilde(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path // leave as-is if home dir cannot be determined
+		}
+		return filepath.Join(home, path[1:])
+	}
+	return path
 }
 
 func validate(cfg *Config) error {

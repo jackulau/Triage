@@ -116,12 +116,14 @@ func buildConfigYAML(appID, keyPath, embedProvider, llmProvider, slackURL, disco
 	b.WriteString("providers:\n")
 	b.WriteString("  embedding:\n")
 	b.WriteString(fmt.Sprintf("    type: %s\n", embedProvider))
-	b.WriteString("    model: text-embedding-3-small\n")
-	b.WriteString("    api_key: ${OPENAI_API_KEY}\n")
+	embedModel, embedAPIKey := embeddingProviderDefaults(embedProvider)
+	b.WriteString(fmt.Sprintf("    model: %s\n", embedModel))
+	b.WriteString(fmt.Sprintf("    api_key: %s\n", embedAPIKey))
 	b.WriteString("  llm:\n")
 	b.WriteString(fmt.Sprintf("    type: %s\n", llmProvider))
-	b.WriteString("    model: gpt-4o-mini\n")
-	b.WriteString("    api_key: ${OPENAI_API_KEY}\n")
+	llmModel, llmAPIKey := llmProviderDefaults(llmProvider)
+	b.WriteString(fmt.Sprintf("    model: %s\n", llmModel))
+	b.WriteString(fmt.Sprintf("    api_key: %s\n", llmAPIKey))
 	b.WriteString("\n")
 
 	b.WriteString("notify:\n")
@@ -150,4 +152,28 @@ func buildConfigYAML(appID, keyPath, embedProvider, llmProvider, slackURL, disco
 	b.WriteString("  path: ~/.triage/triage.db\n")
 
 	return b.String()
+}
+
+// embeddingProviderDefaults returns the default model and api_key placeholder
+// for the given embedding provider type.
+func embeddingProviderDefaults(provider string) (model, apiKey string) {
+	switch provider {
+	case "ollama":
+		return "nomic-embed-text", "# not required for ollama"
+	default: // openai
+		return "text-embedding-3-small", "${OPENAI_API_KEY}"
+	}
+}
+
+// llmProviderDefaults returns the default model and api_key placeholder
+// for the given LLM provider type.
+func llmProviderDefaults(provider string) (model, apiKey string) {
+	switch provider {
+	case "anthropic":
+		return "claude-sonnet-4-20250514", "${ANTHROPIC_API_KEY}"
+	case "ollama":
+		return "llama3", "# not required for ollama"
+	default: // openai
+		return "gpt-4o-mini", "${OPENAI_API_KEY}"
+	}
 }
