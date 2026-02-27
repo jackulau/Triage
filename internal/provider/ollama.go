@@ -33,7 +33,7 @@ func NewOllamaEmbedder(url, model string) *OllamaEmbedder {
 		url:   url,
 		model: model,
 		client: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 30 * time.Second,
 		},
 	}
 }
@@ -79,7 +79,10 @@ func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 		}
 		return nil, fmt.Errorf("ollama embedding request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, fmt.Errorf("%w: ollama returned 429", ErrRateLimit)
@@ -126,9 +129,11 @@ func NewOllamaCompleter(url, model string) *OllamaCompleter {
 		model = defaultOllamaModel
 	}
 	return &OllamaCompleter{
-		url:    url,
-		model:  model,
-		client: &http.Client{},
+		url:   url,
+		model: model,
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
@@ -169,7 +174,10 @@ func (o *OllamaCompleter) Complete(ctx context.Context, prompt string) (string, 
 		}
 		return "", fmt.Errorf("ollama request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode == 429 {
 		return "", fmt.Errorf("%w: HTTP 429", ErrRateLimit)
