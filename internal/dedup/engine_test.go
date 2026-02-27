@@ -333,6 +333,83 @@ func TestEngine_SkipsSelfComparison(t *testing.T) {
 	}
 }
 
+func TestEngine_CheckDuplicateWithThreshold_OverridesEngineThreshold(t *testing.T) {
+	db, repoID := setupTestDB(t)
+	embedder := newMockEmbedder()
+
+	// Existing issue with identical default embedding
+	insertIssueWithEmbedding(t, db, repoID, 1, "Existing issue", []float32{0.1, 0.2, 0.3})
+
+	// New issue will also get default {0.1, 0.2, 0.3} embedding
+	err := db.UpsertIssue(&store.Issue{
+		RepoID:    repoID,
+		Number:    2,
+		Title:     "New issue",
+		State:     "open",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("upserting issue: %v", err)
+	}
+
+	// Engine threshold is very high (0.999) - normally wouldn't find duplicates
+	// with anything but identical vectors
+	engine := NewEngine(embedder, db, WithThreshold(0.999))
+
+	// But with override threshold of 0.5, should find duplicates
+	// (identical vectors have cosine similarity of 1.0)
+	result, err := engine.CheckDuplicateWithThreshold(context.Background(), repoID, github.Issue{
+		Number: 2,
+		Title:  "New issue",
+	}, 0.5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsDuplicate {
+		t.Error("expected to find duplicate with overridden threshold")
+	}
+}
+
+func TestEngine_CheckDuplicateWithThreshold_FallsBackToEngineThreshold(t *testing.T) {
+	db, repoID := setupTestDB(t)
+	embedder := newMockEmbedder()
+
+	// Existing issue with orthogonal embedding
+	insertIssueWithEmbedding(t, db, repoID, 1, "Existing issue", []float32{1, 0, 0})
+
+	// New issue gets a very different embedding
+	embedder.addEmbedding("New issue", []float32{0, 1, 0})
+
+	err := db.UpsertIssue(&store.Issue{
+		RepoID:    repoID,
+		Number:    2,
+		Title:     "New issue",
+		State:     "open",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("upserting issue: %v", err)
+	}
+
+	// Engine threshold is 0.85
+	engine := NewEngine(embedder, db, WithThreshold(0.85))
+
+	// Pass 0 as override -> should fall back to engine threshold (0.85)
+	// Orthogonal vectors have cosine similarity ~0, so no duplicates
+	result, err := engine.CheckDuplicateWithThreshold(context.Background(), repoID, github.Issue{
+		Number: 2,
+		Title:  "New issue",
+	}, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsDuplicate {
+		t.Error("expected no duplicates with fallback to engine threshold")
+	}
+}
+
 func TestEngine_IncludesClosedIssues(t *testing.T) {
 	db, repoID := setupTestDB(t)
 	embedder := newMockEmbedder()

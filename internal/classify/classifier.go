@@ -110,7 +110,13 @@ Example: {"labels": ["bug"], "confidence": 0.8, "reasoning": "This is a bug repo
 
 // Classify classifies a GitHub issue using the LLM completer.
 func (c *Classifier) Classify(ctx context.Context, repo string, labels []config.LabelConfig, issue github.Issue) (*ClassifyResult, error) {
-	prompt, err := BuildPrompt(repo, labels, issue)
+	return c.ClassifyWithCustomPrompt(ctx, repo, labels, issue, "")
+}
+
+// ClassifyWithCustomPrompt classifies a GitHub issue using the LLM completer,
+// appending customPrompt as additional context when non-empty.
+func (c *Classifier) ClassifyWithCustomPrompt(ctx context.Context, repo string, labels []config.LabelConfig, issue github.Issue, customPrompt string) (*ClassifyResult, error) {
+	prompt, err := BuildPromptWithCustom(repo, labels, issue, customPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("building prompt: %w", err)
 	}

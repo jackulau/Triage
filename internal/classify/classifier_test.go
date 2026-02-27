@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,15 +15,17 @@ import (
 
 // mockCompleter is a test double for provider.Completer.
 type mockCompleter struct {
-	responses []string
-	err       error
-	callCount int
+	responses   []string
+	err         error
+	callCount   int
+	lastPrompts []string
 }
 
-func (m *mockCompleter) Complete(_ context.Context, _ string) (string, error) {
+func (m *mockCompleter) Complete(_ context.Context, prompt string) (string, error) {
 	if m.err != nil {
 		return "", m.err
 	}
+	m.lastPrompts = append(m.lastPrompts, prompt)
 	idx := m.callCount
 	if idx >= len(m.responses) {
 		idx = len(m.responses) - 1
@@ -304,5 +307,58 @@ func TestConfidenceLevel(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("confidenceLevel(%f) = %q, want %q", tt.confidence, got, tt.expected)
 		}
+	}
+}
+
+func TestClassifyWithCustomPrompt_AppendsCustomPrompt(t *testing.T) {
+	mock := &mockCompleter{
+		responses: []string{`{"labels": ["bug"], "confidence": 0.9, "reasoning": "Bug report"}`},
+	}
+	c := NewClassifier(mock, 10*time.Second)
+
+	customPrompt := "This repo uses a monorepo structure. Focus on backend services."
+
+	result, err := c.ClassifyWithCustomPrompt(context.Background(), "owner/repo", testLabels, testIssue, customPrompt)
+	if err != nil {
+		t.Fatalf("ClassifyWithCustomPrompt returned error: %v", err)
+	}
+
+	if len(result.Labels) != 1 || result.Labels[0].Name != "bug" {
+		t.Errorf("expected label 'bug', got %v", result.Labels)
+	}
+
+	// Verify the custom prompt was included in the LLM call
+	if len(mock.lastPrompts) == 0 {
+		t.Fatal("expected at least one prompt to be captured")
+	}
+	if !strings.Contains(mock.lastPrompts[0], customPrompt) {
+		t.Errorf("expected custom prompt %q to be included in LLM prompt", customPrompt)
+	}
+	if !strings.Contains(mock.lastPrompts[0], "Additional context:") {
+		t.Error("expected 'Additional context:' section in prompt")
+	}
+}
+
+func TestClassifyWithCustomPrompt_EmptyCustomPromptMatchesClassify(t *testing.T) {
+	mock := &mockCompleter{
+		responses: []string{`{"labels": ["bug"], "confidence": 0.9, "reasoning": "Bug report"}`},
+	}
+	c := NewClassifier(mock, 10*time.Second)
+
+	result, err := c.ClassifyWithCustomPrompt(context.Background(), "owner/repo", testLabels, testIssue, "")
+	if err != nil {
+		t.Fatalf("ClassifyWithCustomPrompt returned error: %v", err)
+	}
+
+	if len(result.Labels) != 1 || result.Labels[0].Name != "bug" {
+		t.Errorf("expected label 'bug', got %v", result.Labels)
+	}
+
+	// Verify "Additional context:" is NOT in the prompt
+	if len(mock.lastPrompts) == 0 {
+		t.Fatal("expected at least one prompt to be captured")
+	}
+	if strings.Contains(mock.lastPrompts[0], "Additional context:") {
+		t.Error("expected no 'Additional context:' section when custom prompt is empty")
 	}
 }
