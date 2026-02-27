@@ -90,8 +90,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		cancel()
 	}()
 
-	fmt.Fprintf(os.Stderr, "[%s] Starting watch on %s/%s (interval: %s)\n",
-		time.Now().Format(time.RFC3339), owner, repo, interval)
+	logger.Info("starting watch", "owner", owner, "repo", repo, "interval", interval.String())
 
 	// Start pipeline in background
 	pipelineErr := make(chan error, 1)
@@ -119,6 +118,6 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "[%s] Watch stopped\n", time.Now().Format(time.RFC3339))
+	logger.Info("watch stopped")
 	return nil
 }

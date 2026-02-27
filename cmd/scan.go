@@ -81,7 +81,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Fetch all open issues with pagination
-	fmt.Fprintf(os.Stderr, "Fetching open issues from %s/%s...\n", owner, repo)
+	logger.Info("fetching open issues", "owner", owner, "repo", repo)
 
 	var allIssues []github.Issue
 	opts := &gogithub.IssueListByRepoOptions{
@@ -113,7 +113,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	total := len(allIssues)
-	fmt.Fprintf(os.Stderr, "Found %d open issues\n", total)
+	logger.Info("found open issues", "count", total)
 
 	if total == 0 {
 		fmt.Println("No open issues found.")
@@ -149,7 +149,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Process each issue
 	var triaged, duplicates, classified int
 	for i, issue := range allIssues {
-		fmt.Fprintf(os.Stderr, "\rProcessing... %d/%d", i+1, total)
+		logger.Info("processing issue", "progress", fmt.Sprintf("%d/%d", i+1, total), "issue", issue.Number)
 
 		result, err := p.ProcessSingleIssue(ctx, repoArg, issue)
 		if err != nil {
@@ -165,8 +165,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 			classified++
 		}
 	}
-	fmt.Fprintln(os.Stderr) // newline after progress
-
 	// Print summary
 	fmt.Printf("\nScan complete for %s/%s\n", owner, repo)
 	fmt.Printf("  Total issues scanned: %d\n", total)
