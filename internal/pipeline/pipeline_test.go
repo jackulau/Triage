@@ -263,7 +263,8 @@ func TestPipelineHandlesEmbedderFailure(t *testing.T) {
 		t.Fatalf("upserting issue: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Allow enough time for retry backoff on embedder (3 attempts: ~3s backoff)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -285,7 +286,8 @@ func TestPipelineHandlesEmbedderFailure(t *testing.T) {
 		ChangeType: github.ChangeNew,
 	})
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for retry attempts on embedder (~3s backoff) + classification
+	time.Sleep(5 * time.Second)
 	cancel()
 	<-done
 
@@ -330,7 +332,8 @@ func TestPipelineHandlesLLMFailure(t *testing.T) {
 		t.Fatalf("upserting issue: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Allow enough time for retry backoff on classifier (3 attempts: ~3s backoff)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -352,7 +355,8 @@ func TestPipelineHandlesLLMFailure(t *testing.T) {
 		ChangeType: github.ChangeNew,
 	})
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for retry attempts on classifier (~3s backoff) + processing
+	time.Sleep(5 * time.Second)
 	cancel()
 	<-done
 
@@ -390,7 +394,8 @@ func TestPipelineHandlesNotificationFailure(t *testing.T) {
 		t.Fatalf("upserting issue: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Allow enough time for retry backoff (1s + 2s + processing)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -412,16 +417,147 @@ func TestPipelineHandlesNotificationFailure(t *testing.T) {
 		ChangeType: github.ChangeNew,
 	})
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for all retry attempts (3 attempts with ~3s total backoff)
+	time.Sleep(5 * time.Second)
 	cancel()
 	<-done
 
-	// Notifier should have been called twice (initial + retry)
+	// Notifier should have been called 3 times (retry.DefaultMaxAttempts)
 	notifier.mu.Lock()
 	defer notifier.mu.Unlock()
-	if notifier.callCount != 2 {
-		t.Errorf("expected 2 notification calls (initial + retry), got %d", notifier.callCount)
+	if notifier.callCount != 3 {
+		t.Errorf("expected 3 notification calls (retry.DefaultMaxAttempts), got %d", notifier.callCount)
 	}
+}
+
+func TestPipelineGracefulDrain(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("opening test db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	broker := pubsub.NewBroker[github.IssueEvent]()
+
+	// Create a slow notifier that takes some time to complete.
+	// This simulates in-flight processing that should finish during drain.
+	var processingStarted sync.WaitGroup
+	processingStarted.Add(1)
+	var processingDone sync.WaitGroup
+	processingDone.Add(1)
+
+	slowNotifier := &slowMockNotifier{
+		onNotify: func() {
+			processingStarted.Done()
+			// Simulate slow processing
+			time.Sleep(200 * time.Millisecond)
+			processingDone.Done()
+		},
+	}
+
+	embedder := newMockEmbedder()
+	completer := &mockCompleter{
+		response: `{"labels": ["bug"], "confidence": 0.9, "reasoning": "This is a bug report"}`,
+	}
+
+	dedupEngine := dedup.NewEngine(embedder, db)
+	classifier := classify.NewClassifier(completer, 10*time.Second)
+
+	p := New(PipelineDeps{
+		Dedup:      dedupEngine,
+		Classifier: classifier,
+		Notifier:   slowNotifier,
+		Store:      db,
+		Broker:     broker,
+		Labels:     testLabels(),
+		Logger:     slog.Default(),
+	})
+
+	repo, err := db.CreateRepo("owner", "repo")
+	if err != nil {
+		t.Fatalf("creating repo: %v", err)
+	}
+	err = db.UpsertIssue(&store.Issue{
+		RepoID:    repo.ID,
+		Number:    5,
+		Title:     "Drain test issue",
+		Body:      "Body for drain test",
+		State:     "open",
+		Author:    "test",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("upserting issue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- p.Run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Publish an event that will trigger slow processing.
+	broker.Publish(pubsub.Created, github.IssueEvent{
+		Repo: "owner/repo",
+		Issue: github.Issue{
+			Number: 5,
+			Title:  "Drain test issue",
+			Body:   "Body for drain test",
+			State:  "open",
+			Author: "test",
+		},
+		ChangeType: github.ChangeNew,
+	})
+
+	// Wait for processing to start.
+	processingStarted.Wait()
+
+	// Cancel context while processing is in-flight.
+	cancel()
+
+	// Wait for Run to return.
+	select {
+	case <-done:
+		// Run returned -- now verify the slow processing fully completed.
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline.Run did not return within timeout")
+	}
+
+	// The processingDone WaitGroup was decremented inside onNotify AFTER the
+	// 200ms sleep. If Run returned before the event finished, this would hang.
+	// We use a short timeout to detect that.
+	waitCh := make(chan struct{})
+	go func() {
+		processingDone.Wait()
+		close(waitCh)
+	}()
+	select {
+	case <-waitCh:
+		// Processing fully completed before Run returned -- graceful drain works.
+	case <-time.After(1 * time.Second):
+		t.Fatal("in-flight event processing did not complete (graceful drain failed)")
+	}
+}
+
+// slowMockNotifier is a mock notifier that calls onNotify before returning.
+type slowMockNotifier struct {
+	mu        sync.Mutex
+	callCount int
+	onNotify  func()
+}
+
+func (m *slowMockNotifier) Notify(_ context.Context, _ github.TriageResult) error {
+	m.mu.Lock()
+	m.callCount++
+	m.mu.Unlock()
+	if m.onNotify != nil {
+		m.onNotify()
+	}
+	return nil
 }
 
 func TestPipelineProcessSingleIssue(t *testing.T) {

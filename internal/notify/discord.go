@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
@@ -99,7 +98,7 @@ func BuildDiscordPayload(result github.TriageResult) discordPayload {
 }
 
 // Notify sends a Discord notification for the given triage result.
-// Retries once on non-2xx response.
+// Callers are expected to wrap this with retry logic if needed.
 func (d *DiscordNotifier) Notify(ctx context.Context, result github.TriageResult) error {
 	payload := BuildDiscordPayload(result)
 
@@ -108,16 +107,7 @@ func (d *DiscordNotifier) Notify(ctx context.Context, result github.TriageResult
 		return fmt.Errorf("marshaling discord payload: %w", err)
 	}
 
-	err = d.post(ctx, body)
-	if err != nil {
-		log.Printf("discord notify failed, retrying: %v", err)
-		// Retry once
-		err = d.post(ctx, body)
-		if err != nil {
-			return fmt.Errorf("discord notify failed after retry: %w", err)
-		}
-	}
-	return nil
+	return d.post(ctx, body)
 }
 
 func (d *DiscordNotifier) post(ctx context.Context, body []byte) error {

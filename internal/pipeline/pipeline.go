@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jacklau/triage/internal/classify"
@@ -13,7 +14,14 @@ import (
 	"github.com/jacklau/triage/internal/github"
 	"github.com/jacklau/triage/internal/notify"
 	"github.com/jacklau/triage/internal/pubsub"
+	"github.com/jacklau/triage/internal/retry"
 	"github.com/jacklau/triage/internal/store"
+)
+
+const (
+	// drainTimeout is the maximum time allowed for an in-flight event to
+	// complete during graceful shutdown.
+	drainTimeout = 30 * time.Second
 )
 
 // PipelineDeps holds the dependencies for the Pipeline.
@@ -42,21 +50,40 @@ func New(deps PipelineDeps) *Pipeline {
 }
 
 // Run subscribes to the broker and processes IssueEvents until the context is cancelled.
+// When the context is cancelled, Run waits for the current in-flight event to finish
+// processing before returning, ensuring graceful shutdown. In-flight events use a
+// detached context so they are not interrupted by pipeline cancellation.
 func (p *Pipeline) Run(ctx context.Context) error {
 	events := p.deps.Broker.Subscribe(ctx)
 	p.deps.Logger.Info("pipeline started, listening for events")
 
+	var wg sync.WaitGroup
+
 	for {
 		select {
 		case <-ctx.Done():
-			p.deps.Logger.Info("pipeline shutting down", "reason", ctx.Err())
+			p.deps.Logger.Info("pipeline shutting down, waiting for in-flight events", "reason", ctx.Err())
+			wg.Wait()
+			p.deps.Logger.Info("pipeline shutdown complete")
 			return ctx.Err()
 		case evt, ok := <-events:
 			if !ok {
-				p.deps.Logger.Info("event channel closed")
+				p.deps.Logger.Info("event channel closed, waiting for in-flight events")
+				wg.Wait()
+				p.deps.Logger.Info("pipeline shutdown complete")
 				return nil
 			}
-			p.handleEvent(ctx, evt)
+			wg.Add(1)
+			// Use a detached context with a timeout for processing so that
+			// in-flight events are not interrupted by pipeline context
+			// cancellation but still have a bounded lifetime.
+			processCtx, processCancel := context.WithTimeout(
+				context.WithoutCancel(ctx),
+				drainTimeout,
+			)
+			p.handleEvent(processCtx, evt)
+			processCancel()
+			wg.Done()
 		}
 	}
 }
@@ -126,24 +153,33 @@ func (p *Pipeline) processIssue(ctx context.Context, ie github.IssueEvent, logge
 		IssueNumber: ie.Issue.Number,
 	}
 
-	// Step 1: Run dedup
+	// Step 1: Run dedup with retry
 	var dedupResult *dedup.DedupResult
 	if p.deps.Dedup != nil {
-		dedupResult, err = p.deps.Dedup.CheckDuplicate(ctx, repo.ID, ie.Issue)
-		if err != nil {
-			logger.Warn("embedding/dedup failed, skipping dedup", "error", err)
+		retryErr := retry.Do(ctx, retry.DefaultMaxAttempts, func() error {
+			var dedupErr error
+			dedupResult, dedupErr = p.deps.Dedup.CheckDuplicate(ctx, repo.ID, ie.Issue)
+			return dedupErr
+		})
+		if retryErr != nil {
+			logger.Warn("embedding/dedup failed after retries, skipping dedup", "error", retryErr)
 			// Continue to classify
 		} else {
 			result.Duplicates = dedupResult.Candidates
 		}
 	}
 
-	// Step 2: If not a duplicate, run classifier
+	// Step 2: If not a duplicate, run classifier with retry
 	isDuplicate := dedupResult != nil && dedupResult.IsDuplicate
 	if !isDuplicate && p.deps.Classifier != nil && len(p.deps.Labels) > 0 {
-		classResult, err := p.deps.Classifier.Classify(ctx, ie.Repo, p.deps.Labels, ie.Issue)
-		if err != nil {
-			logger.Error("classification failed", "error", err)
+		var classResult *classify.ClassifyResult
+		retryErr := retry.Do(ctx, retry.DefaultMaxAttempts, func() error {
+			var classErr error
+			classResult, classErr = p.deps.Classifier.Classify(ctx, ie.Repo, p.deps.Labels, ie.Issue)
+			return classErr
+		})
+		if retryErr != nil {
+			logger.Error("classification failed after retries", "error", retryErr)
 			// Send notification with dedup results only
 		} else {
 			result.SuggestedLabels = classResult.Labels
@@ -184,14 +220,13 @@ func (p *Pipeline) processIssue(ctx context.Context, ie github.IssueEvent, logge
 		logger.Error("failed to log triage action", "error", err)
 	}
 
-	// Step 4: Send notification
+	// Step 4: Send notification with retry
 	if p.deps.Notifier != nil {
-		if err := p.deps.Notifier.Notify(ctx, *result); err != nil {
-			logger.Warn("notification failed, retrying once", "error", err)
-			// Retry once
-			if err := p.deps.Notifier.Notify(ctx, *result); err != nil {
-				logger.Error("notification retry failed", "error", err)
-			}
+		notifyErr := retry.Do(ctx, retry.DefaultMaxAttempts, func() error {
+			return p.deps.Notifier.Notify(ctx, *result)
+		})
+		if notifyErr != nil {
+			logger.Error("notification failed after retries", "error", notifyErr)
 		}
 	}
 
