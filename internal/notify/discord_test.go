@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jacklau/triage/internal/github"
 )
@@ -192,5 +194,56 @@ func TestDiscordNotifier_Notify_RetryOnError(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Errorf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestDiscordNotifier_ClientTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timeout test in short mode")
+	}
+
+	notifier := NewDiscordNotifier("http://example.com")
+	if notifier.client.Timeout != 30*time.Second {
+		t.Errorf("expected client timeout of 30s, got %v", notifier.client.Timeout)
+	}
+}
+
+func TestDiscordNotifier_Notify_TimesOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timeout test in short mode")
+	}
+
+	// Server that delays longer than the client timeout
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create notifier with a very short timeout for test speed
+	notifier := &DiscordNotifier{
+		webhookURL: server.URL,
+		client: &http.Client{
+			Timeout: 100 * time.Millisecond,
+		},
+	}
+
+	result := github.TriageResult{
+		Repo:        "owner/repo",
+		IssueNumber: 1,
+		SuggestedLabels: []github.LabelSuggestion{
+			{Name: "bug", Confidence: 0.9},
+		},
+	}
+
+	err := notifier.Notify(context.Background(), result)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+
+	// The error should indicate a timeout or deadline exceeded
+	errStr := err.Error()
+	if !strings.Contains(errStr, "Client.Timeout") && !strings.Contains(errStr, "deadline exceeded") && !strings.Contains(errStr, "context deadline") {
+		t.Errorf("expected timeout-related error, got: %v", err)
 	}
 }

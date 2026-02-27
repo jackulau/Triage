@@ -24,7 +24,7 @@ func NewSlackNotifier(webhookURL string) *SlackNotifier {
 	return &SlackNotifier{
 		webhookURL: webhookURL,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second,
 		},
 	}
 }
@@ -131,7 +131,10 @@ func (s *SlackNotifier) post(ctx context.Context, body []byte) error {
 	if err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
