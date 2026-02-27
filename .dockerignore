@@ -1,0 +1,8 @@
+.git
+.github
+.claude
+.claude-workspace
+*.db
+*.md
+tasks/
+memory/
