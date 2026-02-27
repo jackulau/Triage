@@ -24,13 +24,20 @@ const (
 	drainTimeout = 30 * time.Second
 )
 
+// PipelineStore is the subset of store.Store used by the pipeline.
+// It allows injecting a mock for testing.
+type PipelineStore interface {
+	GetRepoByOwnerRepo(owner, repo string) (*store.Repo, error)
+	CreateRepo(owner, repo string) (*store.Repo, error)
+	LogTriageAction(log *store.TriageLog) error
+}
+
 // PipelineDeps holds the dependencies for the Pipeline.
 type PipelineDeps struct {
-	Poller      *github.Poller
 	Dedup       *dedup.Engine
 	Classifier  *classify.Classifier
 	Notifier    notify.Notifier
-	Store       *store.DB
+	Store       PipelineStore
 	Broker      *pubsub.Broker[github.IssueEvent]
 	Labels      []config.LabelConfig
 	RepoConfigs []config.RepoConfig

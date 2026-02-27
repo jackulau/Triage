@@ -465,3 +465,8 @@ func TestEngine_IncludesClosedIssues(t *testing.T) {
 		t.Errorf("expected candidate #1 (closed issue), got #%d", result.Candidates[0].Number)
 	}
 }
+
+func TestDBSatisfiesEmbeddingStore(t *testing.T) {
+	// Verify *store.DB satisfies the EmbeddingStore interface at compile time.
+	var _ EmbeddingStore = (*store.DB)(nil)
+}

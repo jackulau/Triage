@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -24,17 +25,18 @@ func NewMultiNotifier(notifiers ...Notifier) *MultiNotifier {
 }
 
 // Notify sends the triage result to all configured notifiers.
-// It logs errors from individual notifiers but continues to the rest.
-// Returns the last error encountered, if any.
+// It attempts every notifier and collects all errors, returning them
+// joined via errors.Join. This ensures no notifier is skipped due to
+// a prior failure.
 func (m *MultiNotifier) Notify(ctx context.Context, result github.TriageResult) error {
-	var lastErr error
+	var errs []error
 	for _, n := range m.notifiers {
 		if err := n.Notify(ctx, result); err != nil {
 			log.Printf("notifier error: %v", err)
-			lastErr = err
+			errs = append(errs, err)
 		}
 	}
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // NewNotifier creates a Notifier based on the notifyType.

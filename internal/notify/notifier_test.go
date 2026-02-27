@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jacklau/triage/internal/github"
@@ -63,7 +64,7 @@ func TestMultiNotifier_ContinuesOnError(t *testing.T) {
 	}
 }
 
-func TestMultiNotifier_ReturnsLastError(t *testing.T) {
+func TestMultiNotifier_ReturnsJoinedErrors(t *testing.T) {
 	n1 := &mockNotifier{err: errors.New("n1 failed")}
 	n2 := &mockNotifier{err: errors.New("n2 failed")}
 
@@ -74,8 +75,23 @@ func TestMultiNotifier_ReturnsLastError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if err.Error() != "n2 failed" {
-		t.Errorf("expected last error 'n2 failed', got %q", err.Error())
+
+	// errors.Join produces an error whose Error() contains both messages
+	msg := err.Error()
+	if !strings.Contains(msg, "n1 failed") {
+		t.Errorf("expected joined error to contain 'n1 failed', got %q", msg)
+	}
+	if !strings.Contains(msg, "n2 failed") {
+		t.Errorf("expected joined error to contain 'n2 failed', got %q", msg)
+	}
+
+	// Verify individual errors can be unwrapped
+	var unwrapped interface{ Unwrap() []error }
+	if !errors.As(err, &unwrapped) {
+		t.Fatal("expected errors.Join result to implement Unwrap() []error")
+	}
+	if len(unwrapped.Unwrap()) != 2 {
+		t.Errorf("expected 2 wrapped errors, got %d", len(unwrapped.Unwrap()))
 	}
 }
 
