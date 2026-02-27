@@ -2,6 +2,7 @@ package dedup
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"sort"
 
@@ -14,6 +15,9 @@ import (
 type EmbeddingStore interface {
 	GetEmbeddingsForRepo(repoID int64) ([]store.IssueEmbedding, error)
 	UpdateEmbedding(repoID int64, number int, embedding []byte, model string) error
+	UpdateEmbeddingWithHash(repoID int64, number int, embedding []byte, model, bodyHash string) error
+	GetIssueEmbeddingHash(repoID int64, number int) (hash string, hasEmbedding bool, err error)
+	GetIssue(repoID int64, number int) (*store.Issue, error)
 }
 
 const (
@@ -97,8 +101,24 @@ func (e *Engine) composeText(issue github.Issue) string {
 	return text
 }
 
+// ContentHash computes a SHA-256 hash of the issue's title and body content.
+// This is used to determine if an issue's content has changed since it was last embedded.
+func ContentHash(title, body string) string {
+	h := sha256.New()
+	h.Write([]byte(title))
+	h.Write([]byte("\n\n"))
+	h.Write([]byte(body))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// ComposeText creates the text to embed from an issue's title and body (exported for scan).
+func (e *Engine) ComposeText(issue github.Issue) string {
+	return e.composeText(issue)
+}
+
 // CheckDuplicate embeds an issue and compares it against all existing embeddings
 // in the same repo to find potential duplicates.
+// It skips re-embedding if the content hash hasn't changed.
 func (e *Engine) CheckDuplicate(ctx context.Context, repoID int64, issue github.Issue) (*DedupResult, error) {
 	return e.CheckDuplicateWithThreshold(ctx, repoID, issue, 0)
 }
@@ -112,18 +132,34 @@ func (e *Engine) CheckDuplicateWithThreshold(ctx context.Context, repoID int64, 
 		threshold = thresholdOverride
 	}
 
-	// Compose and embed the text
+	// Compose the text and compute content hash
 	text := e.composeText(issue)
+	hash := ContentHash(issue.Title, issue.Body)
 
-	embedding, err := e.embedder.Embed(ctx, text)
-	if err != nil {
-		return nil, fmt.Errorf("embedding issue #%d: %w", issue.Number, err)
+	var embedding []float32
+
+	// Check if we can skip re-embedding (content unchanged)
+	storedHash, hasEmbedding, err := e.store.GetIssueEmbeddingHash(repoID, issue.Number)
+	if err == nil && hasEmbedding && storedHash == hash && hash != "" {
+		// Content unchanged, load existing embedding from store
+		storedIssue, err := e.store.GetIssue(repoID, issue.Number)
+		if err == nil && len(storedIssue.Embedding) > 0 {
+			embedding = DecodeEmbedding(storedIssue.Embedding)
+		}
 	}
 
-	// Store the embedding
-	encoded := EncodeEmbedding(embedding)
-	if err := e.store.UpdateEmbedding(repoID, issue.Number, encoded, ""); err != nil {
-		return nil, fmt.Errorf("storing embedding for issue #%d: %w", issue.Number, err)
+	// If we don't have a cached embedding, compute one
+	if embedding == nil {
+		embedding, err = e.embedder.Embed(ctx, text)
+		if err != nil {
+			return nil, fmt.Errorf("embedding issue #%d: %w", issue.Number, err)
+		}
+
+		// Store the embedding with content hash
+		encoded := EncodeEmbedding(embedding)
+		if err := e.store.UpdateEmbeddingWithHash(repoID, issue.Number, encoded, "", hash); err != nil {
+			return nil, fmt.Errorf("storing embedding for issue #%d: %w", issue.Number, err)
+		}
 	}
 
 	// Fetch all existing embeddings for the repo

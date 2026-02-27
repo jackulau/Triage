@@ -110,6 +110,38 @@ func (d *DB) UpdateEmbedding(repoID int64, number int, embedding []byte, model s
 	return nil
 }
 
+// UpdateEmbeddingWithHash sets the embedding vector and content hash for an issue.
+func (d *DB) UpdateEmbeddingWithHash(repoID int64, number int, embedding []byte, model, bodyHash string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.db.Exec(`
+		UPDATE issues SET embedding = ?, embedding_model = ?, embedded_at = ?, body_hash = ?
+		WHERE repo_id = ? AND number = ?`,
+		embedding, model, now, bodyHash, repoID, number,
+	)
+	if err != nil {
+		return fmt.Errorf("updating embedding with hash: %w", err)
+	}
+	return nil
+}
+
+// GetIssueEmbeddingHash returns the stored body_hash and whether an embedding exists
+// for the given issue. This is used to check if re-embedding is needed.
+func (d *DB) GetIssueEmbeddingHash(repoID int64, number int) (hash string, hasEmbedding bool, err error) {
+	var bodyHash sql.NullString
+	var embedding []byte
+	err = d.db.QueryRow(`
+		SELECT body_hash, embedding FROM issues WHERE repo_id = ? AND number = ?`,
+		repoID, number,
+	).Scan(&bodyHash, &embedding)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("getting issue embedding hash: %w", err)
+	}
+	return bodyHash.String, len(embedding) > 0, nil
+}
+
 // GetEmbeddingsForRepo returns all issue embeddings for a repo that have been embedded.
 func (d *DB) GetEmbeddingsForRepo(repoID int64) ([]IssueEmbedding, error) {
 	rows, err := d.db.Query(`

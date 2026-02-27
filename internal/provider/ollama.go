@@ -111,6 +111,15 @@ func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 	return embedding, nil
 }
 
+// EmbedBatch returns vector embeddings for multiple texts by calling Embed sequentially.
+// Ollama does not support native batch embedding, so this falls back to sequential processing.
+func (e *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	return EmbedBatchSequential(ctx, e, texts)
+}
+
+// Verify OllamaEmbedder implements BatchEmbedder.
+var _ BatchEmbedder = (*OllamaEmbedder)(nil)
+
 // OllamaCompleter implements the Completer interface using a local Ollama server.
 type OllamaCompleter struct {
 	url    string

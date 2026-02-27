@@ -378,3 +378,19 @@ func TestCheckFlagRegistration(t *testing.T) {
 		t.Errorf("--output default = %q, want %q", outputFlag.DefValue, "text")
 	}
 }
+
+func TestScanCmd_DefaultWorkers(t *testing.T) {
+	if defaultScanWorkers != 5 {
+		t.Errorf("expected default workers to be 5, got %d", defaultScanWorkers)
+	}
+}
+
+func TestScanCmd_WorkersFlagRegistered(t *testing.T) {
+	flag := scanCmd.Flags().Lookup("workers")
+	if flag == nil {
+		t.Fatal("expected --workers flag to be registered")
+	}
+	if flag.DefValue != "5" {
+		t.Errorf("expected default value '5', got %q", flag.DefValue)
+	}
+}

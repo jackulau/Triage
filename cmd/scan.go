@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,10 +22,13 @@ import (
 )
 
 var (
-	scanNotify string
-	scanOutput string
-	scanSince  string
+	scanNotify  string
+	scanOutput  string
+	scanSince   string
+	scanWorkers int
 )
+
+const defaultScanWorkers = 5
 
 var scanCmd = &cobra.Command{
 	Use:   "scan <owner/repo>",
@@ -42,6 +47,7 @@ func init() {
 	scanCmd.Flags().StringVar(&scanNotify, "notify", "", "notification target: slack, discord, or both")
 	scanCmd.Flags().StringVar(&scanOutput, "output", "text", "output format: text or json")
 	scanCmd.Flags().StringVar(&scanSince, "since", "", "only process issues updated within this duration (e.g. 24h, 7d)")
+	scanCmd.Flags().IntVar(&scanWorkers, "workers", defaultScanWorkers, "number of concurrent workers for issue processing")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -211,58 +217,79 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	p := createPipeline(c, n, labels)
 
-	// Process each issue with progress bar
-	var triaged, duplicatesCount, classifiedCount int
+	// Process issues concurrently using a worker pool
+	workers := scanWorkers
+	if workers <= 0 {
+		workers = defaultScanWorkers
+	}
+
+	var triaged, duplicatesCount, classifiedCount int64
+	var mu sync.Mutex
 	var results []checkResultJSON
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
 
 	bar := newProgressBar(total, "Processing", os.Stderr)
 
 	for _, issue := range allIssues {
-		result, err := p.ProcessSingleIssue(ctx, repoArg, issue)
-		if err != nil {
-			logger.Warn("failed to process issue", "issue", issue.Number, "error", err)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(iss github.Issue) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			result, err := p.ProcessSingleIssue(ctx, repoArg, iss)
 			bar.Add(1)
-			continue
-		}
 
-		triaged++
-		if len(result.Duplicates) > 0 {
-			duplicatesCount++
-		}
-		if len(result.SuggestedLabels) > 0 {
-			classifiedCount++
-		}
+			if err != nil {
+				logger.Warn("failed to process issue", "issue", iss.Number, "error", err)
+				return
+			}
 
-		if scanOutput == "json" {
-			jr := checkResultJSON{
-				Issue: issueJSON{
-					Number: issue.Number,
-					Title:  issue.Title,
-				},
-				Duplicates: make([]duplicateJSON, 0, len(result.Duplicates)),
-				Labels:     make([]labelJSON, 0, len(result.SuggestedLabels)),
-				Reasoning:  result.Reasoning,
+			atomic.AddInt64(&triaged, 1)
+			if len(result.Duplicates) > 0 {
+				atomic.AddInt64(&duplicatesCount, 1)
 			}
-			for _, d := range result.Duplicates {
-				jr.Duplicates = append(jr.Duplicates, duplicateJSON{
-					Number: d.Number,
-					Score:  float64(d.Score),
-				})
+			if len(result.SuggestedLabels) > 0 {
+				atomic.AddInt64(&classifiedCount, 1)
 			}
-			for _, l := range result.SuggestedLabels {
-				jr.Labels = append(jr.Labels, labelJSON{
-					Name:       l.Name,
-					Confidence: l.Confidence,
-				})
-			}
-			results = append(results, jr)
-		}
 
-		bar.Add(1)
+			if scanOutput == "json" {
+				jr := checkResultJSON{
+					Issue: issueJSON{
+						Number: iss.Number,
+						Title:  iss.Title,
+					},
+					Duplicates: make([]duplicateJSON, 0, len(result.Duplicates)),
+					Labels:     make([]labelJSON, 0, len(result.SuggestedLabels)),
+					Reasoning:  result.Reasoning,
+				}
+				for _, d := range result.Duplicates {
+					jr.Duplicates = append(jr.Duplicates, duplicateJSON{
+						Number: d.Number,
+						Score:  float64(d.Score),
+					})
+				}
+				for _, l := range result.SuggestedLabels {
+					jr.Labels = append(jr.Labels, labelJSON{
+						Name:       l.Name,
+						Confidence: l.Confidence,
+					})
+				}
+				mu.Lock()
+				results = append(results, jr)
+				mu.Unlock()
+			}
+		}(issue)
 	}
+	wg.Wait()
 	bar.Finish()
 
 	// Output results
+	dupCount := atomic.LoadInt64(&duplicatesCount)
+	classCount := atomic.LoadInt64(&classifiedCount)
+	triagedCount := atomic.LoadInt64(&triaged)
+
 	if scanOutput == "json" {
 		if results == nil {
 			results = make([]checkResultJSON, 0)
@@ -276,9 +303,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 		// Print text summary
 		fmt.Printf("\nScan complete for %s/%s\n", owner, repo)
 		fmt.Printf("  Total issues scanned: %d\n", total)
-		fmt.Printf("  Successfully triaged: %d\n", triaged)
-		fmt.Printf("  Potential duplicates: %d\n", duplicatesCount)
-		fmt.Printf("  Issues classified:    %d\n", classifiedCount)
+		fmt.Printf("  Successfully triaged: %d\n", triagedCount)
+		fmt.Printf("  Potential duplicates: %d\n", dupCount)
+		fmt.Printf("  Issues classified:    %d\n", classCount)
 	}
 
 	// Send summary notification
@@ -286,7 +313,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		summaryResult := github.TriageResult{
 			Repo:        repoArg,
 			IssueNumber: 0, // summary, not a single issue
-			Reasoning:   fmt.Sprintf("Scan complete: %d issues scanned, %d potential duplicates, %d classified", total, duplicatesCount, classifiedCount),
+			Reasoning:   fmt.Sprintf("Scan complete: %d issues scanned, %d potential duplicates, %d classified", total, dupCount, classCount),
 		}
 		if err := n.Notify(ctx, summaryResult); err != nil {
 			logger.Warn("failed to send summary notification", "error", err)

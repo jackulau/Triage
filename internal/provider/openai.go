@@ -69,6 +69,48 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 	return resp.Data[0].Embedding, nil
 }
 
+// EmbedBatch returns vector embeddings for multiple texts using OpenAI's batch API.
+func (e *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	// Validate inputs
+	for i, text := range texts {
+		if strings.TrimSpace(text) == "" {
+			return nil, fmt.Errorf("cannot embed empty text at index %d", i)
+		}
+	}
+
+	resp, err := e.client.CreateEmbeddings(ctx, openai.EmbeddingRequest{
+		Input: texts,
+		Model: e.model,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+			return nil, fmt.Errorf("%w: %v", ErrRateLimit, err)
+		}
+		if strings.Contains(err.Error(), "timeout") {
+			return nil, fmt.Errorf("%w: %v", ErrTimeout, err)
+		}
+		return nil, fmt.Errorf("openai batch embedding request: %w", err)
+	}
+
+	if len(resp.Data) != len(texts) {
+		return nil, fmt.Errorf("%w: expected %d embeddings, got %d", ErrInvalidResponse, len(texts), len(resp.Data))
+	}
+
+	results := make([][]float32, len(texts))
+	for i, d := range resp.Data {
+		results[i] = d.Embedding
+	}
+
+	return results, nil
+}
+
+// Verify OpenAIEmbedder implements BatchEmbedder.
+var _ BatchEmbedder = (*OpenAIEmbedder)(nil)
+
 // OpenAICompleter implements the Completer interface using the OpenAI API.
 type OpenAICompleter struct {
 	client *openai.Client
