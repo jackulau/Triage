@@ -9,10 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jacklau/triage/internal/github"
 	"github.com/jacklau/triage/internal/store"
-
-	gogithub "github.com/google/go-github/v60/github"
 )
 
 var checkCmd = &cobra.Command{
@@ -82,7 +79,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("fetching issue #%d: %w", number, err)
 	}
 
-	issue := convertGHIssuePtr(ghIssue)
+	issue := convertGHIssue(ghIssue)
 
 	// Ensure repo and issue exist in store
 	repoRecord, err := c.Store.GetRepoByOwnerRepo(owner, repo)
@@ -156,26 +153,4 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-func convertGHIssuePtr(gh *gogithub.Issue) github.Issue {
-	issue := github.Issue{
-		Number: gh.GetNumber(),
-		Title:  gh.GetTitle(),
-		Body:   gh.GetBody(),
-		State:  gh.GetState(),
-	}
-	if gh.User != nil {
-		issue.Author = gh.User.GetLogin()
-	}
-	for _, label := range gh.Labels {
-		issue.Labels = append(issue.Labels, label.GetName())
-	}
-	if gh.CreatedAt != nil {
-		issue.CreatedAt = gh.CreatedAt.Time
-	}
-	if gh.UpdatedAt != nil {
-		issue.UpdatedAt = gh.UpdatedAt.Time
-	}
-	return issue
 }

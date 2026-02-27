@@ -63,11 +63,6 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create notifier
-	var notifier interface {
-		Notify(context.Context, interface{}) error
-	}
-	_ = notifier // satisfy linter
-
 	n, err := createNotifier(cfg, watchNotify)
 	if err != nil {
 		return fmt.Errorf("creating notifier: %w", err)

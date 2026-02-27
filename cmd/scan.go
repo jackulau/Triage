@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -57,7 +59,17 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("GitHub client not configured (set github.auth: app in config)")
 	}
 
-	ctx := context.Background()
+	// Graceful shutdown on SIGINT/SIGTERM
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		logger.Info("received signal, shutting down", "signal", sig)
+		cancel()
+	}()
 
 	// Create or get repo record
 	repoRecord, err := c.Store.GetRepoByOwnerRepo(owner, repo)
@@ -175,28 +187,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-func convertGHIssue(gh *gogithub.Issue) github.Issue {
-	issue := github.Issue{
-		Number: gh.GetNumber(),
-		Title:  gh.GetTitle(),
-		Body:   gh.GetBody(),
-		State:  gh.GetState(),
-	}
-	if gh.User != nil {
-		issue.Author = gh.User.GetLogin()
-	}
-	for _, label := range gh.Labels {
-		issue.Labels = append(issue.Labels, label.GetName())
-	}
-	if gh.CreatedAt != nil {
-		issue.CreatedAt = gh.CreatedAt.Time
-	}
-	if gh.UpdatedAt != nil {
-		issue.UpdatedAt = gh.UpdatedAt.Time
-	}
-	return issue
 }
 
 // noopNotifier is a Notifier that does nothing.
