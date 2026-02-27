@@ -120,6 +120,10 @@ func initComponents(cfg *config.Config, logger *slog.Logger) (*components, error
 		c.Embedder = provider.NewOpenAIEmbedder(cfg.Providers.Embedding.APIKey, cfg.Providers.Embedding.Model)
 	case "ollama":
 		c.Embedder = provider.NewOllamaEmbedder(cfg.Providers.Embedding.URL, cfg.Providers.Embedding.Model)
+	case "":
+		// No embedding provider configured
+	default:
+		return nil, fmt.Errorf("unsupported embedding provider type: %q", cfg.Providers.Embedding.Type)
 	}
 
 	// Create LLM provider
@@ -130,6 +134,10 @@ func initComponents(cfg *config.Config, logger *slog.Logger) (*components, error
 		c.Completer = provider.NewAnthropicCompleter(cfg.Providers.LLM.APIKey, cfg.Providers.LLM.Model)
 	case "ollama":
 		c.Completer = provider.NewOllamaCompleter(cfg.Providers.LLM.URL, cfg.Providers.LLM.Model)
+	case "":
+		// No LLM provider configured
+	default:
+		return nil, fmt.Errorf("unsupported LLM provider type: %q", cfg.Providers.LLM.Type)
 	}
 
 	// Create dedup engine
