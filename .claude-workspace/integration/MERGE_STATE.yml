@@ -1,9 +1,0 @@
-target: main
-started_at: "2026-02-26T11:30:00Z"
-tasks:
-  foundation: pending
-  github-poller: pending
-  dedup-engine: pending
-  classifier: pending
-  notifier: pending
-  pipeline-cli: pending
