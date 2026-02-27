@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/spf13/cobra"
 
@@ -15,7 +17,12 @@ import (
 	gogithub "github.com/google/go-github/v60/github"
 )
 
-var scanNotify string
+var (
+	scanNotify  string
+	scanWorkers int
+)
+
+const defaultScanWorkers = 5
 
 var scanCmd = &cobra.Command{
 	Use:   "scan <owner/repo>",
@@ -29,6 +36,7 @@ and sends a summary notification.`,
 
 func init() {
 	scanCmd.Flags().StringVar(&scanNotify, "notify", "", "notification target: slack, discord, or both")
+	scanCmd.Flags().IntVar(&scanWorkers, "workers", defaultScanWorkers, "number of concurrent workers for issue processing")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -134,40 +142,62 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	p := createPipeline(c, n, labels)
 
-	// Process each issue
-	var triaged, duplicates, classified int
-	for i, issue := range allIssues {
-		fmt.Fprintf(os.Stderr, "\rProcessing... %d/%d", i+1, total)
-
-		result, err := p.ProcessSingleIssue(ctx, repoArg, issue)
-		if err != nil {
-			logger.Warn("failed to process issue", "issue", issue.Number, "error", err)
-			continue
-		}
-
-		triaged++
-		if len(result.Duplicates) > 0 {
-			duplicates++
-		}
-		if len(result.SuggestedLabels) > 0 {
-			classified++
-		}
+	// Process issues concurrently using a worker pool
+	workers := scanWorkers
+	if workers <= 0 {
+		workers = defaultScanWorkers
 	}
+
+	var triaged, duplicates, classified int64
+	var processed int64
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	for _, issue := range allIssues {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(iss github.Issue) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			result, err := p.ProcessSingleIssue(ctx, repoArg, iss)
+			count := atomic.AddInt64(&processed, 1)
+			fmt.Fprintf(os.Stderr, "\rProcessing... %d/%d", count, total)
+
+			if err != nil {
+				logger.Warn("failed to process issue", "issue", iss.Number, "error", err)
+				return
+			}
+
+			atomic.AddInt64(&triaged, 1)
+			if len(result.Duplicates) > 0 {
+				atomic.AddInt64(&duplicates, 1)
+			}
+			if len(result.SuggestedLabels) > 0 {
+				atomic.AddInt64(&classified, 1)
+			}
+		}(issue)
+	}
+	wg.Wait()
 	fmt.Fprintln(os.Stderr) // newline after progress
 
 	// Print summary
+	triagedCount := atomic.LoadInt64(&triaged)
+	duplicatesCount := atomic.LoadInt64(&duplicates)
+	classifiedCount := atomic.LoadInt64(&classified)
+
 	fmt.Printf("\nScan complete for %s/%s\n", owner, repo)
 	fmt.Printf("  Total issues scanned: %d\n", total)
-	fmt.Printf("  Successfully triaged: %d\n", triaged)
-	fmt.Printf("  Potential duplicates: %d\n", duplicates)
-	fmt.Printf("  Issues classified:    %d\n", classified)
+	fmt.Printf("  Successfully triaged: %d\n", triagedCount)
+	fmt.Printf("  Potential duplicates: %d\n", duplicatesCount)
+	fmt.Printf("  Issues classified:    %d\n", classifiedCount)
 
 	// Send summary notification
 	if n != nil {
 		summaryResult := github.TriageResult{
 			Repo:        repoArg,
 			IssueNumber: 0, // summary, not a single issue
-			Reasoning:   fmt.Sprintf("Scan complete: %d issues scanned, %d potential duplicates, %d classified", total, duplicates, classified),
+			Reasoning:   fmt.Sprintf("Scan complete: %d issues scanned, %d potential duplicates, %d classified", total, duplicatesCount, classifiedCount),
 		}
 		if err := n.Notify(ctx, summaryResult); err != nil {
 			logger.Warn("failed to send summary notification", "error", err)
