@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-// --- Embedder ---
+const (
+	defaultOllamaModel = "llama3.1:8b"
+	defaultOllamaURL   = "http://localhost:11434"
+)
 
 // OllamaEmbedder implements the Embedder interface using Ollama's local API.
 type OllamaEmbedder struct {
@@ -104,13 +107,6 @@ func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 
 	return embedding, nil
 }
-
-// --- Completer ---
-
-const (
-	defaultOllamaModel = "llama3.1:8b"
-	defaultOllamaURL   = "http://localhost:11434"
-)
 
 // OllamaCompleter implements the Completer interface using a local Ollama server.
 type OllamaCompleter struct {

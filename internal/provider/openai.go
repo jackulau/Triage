@@ -9,7 +9,7 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// --- Embedder ---
+const defaultOpenAIModel = "gpt-4o-mini"
 
 // OpenAIEmbedder implements the Embedder interface using OpenAI's embedding API.
 type OpenAIEmbedder struct {
@@ -63,10 +63,6 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 
 	return resp.Data[0].Embedding, nil
 }
-
-// --- Completer ---
-
-const defaultOpenAIModel = "gpt-4o-mini"
 
 // OpenAICompleter implements the Completer interface using the OpenAI API.
 type OpenAICompleter struct {
