@@ -175,11 +175,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	total := len(allIssues)
-	logger.Info("found open issues", "count", total)
 	if sinceDuration > 0 {
-		fmt.Fprintf(os.Stderr, "Found %d open issues updated within %s\n", total, scanSince)
+		logger.Info("found open issues within window", "count", total, "since", scanSince)
 	} else {
-		fmt.Fprintf(os.Stderr, "Found %d open issues\n", total)
+		logger.Info("found open issues", "count", total)
 	}
 
 	if total == 0 {

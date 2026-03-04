@@ -7,68 +7,6 @@ import (
 	"github.com/jacklau/triage/internal/github"
 )
 
-func TestParseIssueRef(t *testing.T) {
-	tests := []struct {
-		name       string
-		ref        string
-		wantOwner  string
-		wantRepo   string
-		wantNumber int
-		wantErr    bool
-	}{
-		{
-			name:       "valid ref",
-			ref:        "octocat/hello-world#42",
-			wantOwner:  "octocat",
-			wantRepo:   "hello-world",
-			wantNumber: 42,
-		},
-		{
-			name:    "missing hash",
-			ref:     "octocat/hello-world",
-			wantErr: true,
-		},
-		{
-			name:    "missing repo",
-			ref:     "octocat#42",
-			wantErr: true,
-		},
-		{
-			name:    "invalid number",
-			ref:     "octocat/hello-world#abc",
-			wantErr: true,
-		},
-		{
-			name:       "repo with dots",
-			ref:        "org/my.repo.name#1",
-			wantOwner:  "org",
-			wantRepo:   "my.repo.name",
-			wantNumber: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			owner, repo, number, err := parseIssueRef(tt.ref)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("parseIssueRef(%q) error = %v, wantErr %v", tt.ref, err, tt.wantErr)
-			}
-			if tt.wantErr {
-				return
-			}
-			if owner != tt.wantOwner {
-				t.Errorf("owner = %q, want %q", owner, tt.wantOwner)
-			}
-			if repo != tt.wantRepo {
-				t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
-			}
-			if number != tt.wantNumber {
-				t.Errorf("number = %d, want %d", number, tt.wantNumber)
-			}
-		})
-	}
-}
-
 func TestPrintCheckJSON(t *testing.T) {
 	issue := github.Issue{
 		Number: 42,

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -181,6 +182,18 @@ func (m *mockEmbeddingStore) UpdateEmbedding(repoID int64, number int, embedding
 	}
 	m.embeddings[repoID][number] = embedding
 	return nil
+}
+
+func (m *mockEmbeddingStore) UpdateEmbeddingWithHash(repoID int64, number int, embedding []byte, model, bodyHash string) error {
+	return m.UpdateEmbedding(repoID, number, embedding, model)
+}
+
+func (m *mockEmbeddingStore) GetIssueEmbeddingHash(repoID int64, number int) (string, bool, error) {
+	return "", false, nil
+}
+
+func (m *mockEmbeddingStore) GetIssue(repoID int64, number int) (*store.Issue, error) {
+	return nil, fmt.Errorf("not found")
 }
 
 func testLabels() []config.LabelConfig {

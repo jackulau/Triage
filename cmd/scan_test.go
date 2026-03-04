@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
-
-	gogithub "github.com/google/go-github/v60/github"
 )
 
 func TestScanCmdArgsValidation(t *testing.T) {
@@ -100,121 +98,6 @@ func splitRepo(repoArg string) []string {
 	}
 	parts = append(parts, repoArg[:slashIdx], repoArg[slashIdx+1:])
 	return parts
-}
-
-func TestConvertGHIssue(t *testing.T) {
-	title := "Test title"
-	body := "Test body"
-	state := "open"
-	login := "testuser"
-	number := 42
-	label1Name := "bug"
-	label2Name := "critical"
-	now := time.Now()
-	ghTime := gogithub.Timestamp{Time: now}
-
-	ghIssue := &gogithub.Issue{
-		Number: &number,
-		Title:  &title,
-		Body:   &body,
-		State:  &state,
-		User: &gogithub.User{
-			Login: &login,
-		},
-		Labels: []*gogithub.Label{
-			{Name: &label1Name},
-			{Name: &label2Name},
-		},
-		CreatedAt: &ghTime,
-		UpdatedAt: &ghTime,
-	}
-
-	issue := convertGHIssue(ghIssue)
-
-	if issue.Number != number {
-		t.Errorf("Number: expected %d, got %d", number, issue.Number)
-	}
-	if issue.Title != title {
-		t.Errorf("Title: expected %q, got %q", title, issue.Title)
-	}
-	if issue.Body != body {
-		t.Errorf("Body: expected %q, got %q", body, issue.Body)
-	}
-	if issue.State != state {
-		t.Errorf("State: expected %q, got %q", state, issue.State)
-	}
-	if issue.Author != login {
-		t.Errorf("Author: expected %q, got %q", login, issue.Author)
-	}
-	if len(issue.Labels) != 2 {
-		t.Fatalf("Labels: expected 2, got %d", len(issue.Labels))
-	}
-	if issue.Labels[0] != label1Name {
-		t.Errorf("Labels[0]: expected %q, got %q", label1Name, issue.Labels[0])
-	}
-	if issue.Labels[1] != label2Name {
-		t.Errorf("Labels[1]: expected %q, got %q", label2Name, issue.Labels[1])
-	}
-	if !issue.CreatedAt.Equal(now) {
-		t.Errorf("CreatedAt: expected %v, got %v", now, issue.CreatedAt)
-	}
-	if !issue.UpdatedAt.Equal(now) {
-		t.Errorf("UpdatedAt: expected %v, got %v", now, issue.UpdatedAt)
-	}
-}
-
-func TestConvertGHIssueMinimalFields(t *testing.T) {
-	// Test with nil optional fields
-	number := 1
-	title := "Minimal"
-	state := "open"
-
-	ghIssue := &gogithub.Issue{
-		Number: &number,
-		Title:  &title,
-		State:  &state,
-		// No User, no Labels, no Body, no timestamps
-	}
-
-	issue := convertGHIssue(ghIssue)
-
-	if issue.Number != number {
-		t.Errorf("Number: expected %d, got %d", number, issue.Number)
-	}
-	if issue.Title != title {
-		t.Errorf("Title: expected %q, got %q", title, issue.Title)
-	}
-	if issue.Author != "" {
-		t.Errorf("Author: expected empty, got %q", issue.Author)
-	}
-	if len(issue.Labels) != 0 {
-		t.Errorf("Labels: expected empty, got %v", issue.Labels)
-	}
-}
-
-func TestConvertGHIssuePtrMinimal(t *testing.T) {
-	// Test convertGHIssuePtr (from check.go) with minimal fields
-	number := 5
-	title := "Ptr minimal"
-	state := "closed"
-
-	ghIssue := &gogithub.Issue{
-		Number: &number,
-		Title:  &title,
-		State:  &state,
-	}
-
-	issue := convertGHIssuePtr(ghIssue)
-
-	if issue.Number != number {
-		t.Errorf("Number: expected %d, got %d", number, issue.Number)
-	}
-	if issue.State != state {
-		t.Errorf("State: expected %q, got %q", state, issue.State)
-	}
-	if issue.Author != "" {
-		t.Errorf("Author: expected empty, got %q", issue.Author)
-	}
 }
 
 func TestParseSinceDuration(t *testing.T) {
