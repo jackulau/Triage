@@ -1,0 +1,40 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        # fmt print functions to stdout/stderr — errors are unactionable
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+        # Deferred close on HTTP response bodies — safe to ignore
+        - (io.Closer).Close
+        - (*os.File).Close
+        # Drain response body before close — safe to ignore
+        - io.Copy
+        # Deferred transaction rollback — no-op after commit
+        - (*database/sql.Tx).Rollback
+        # Deferred rows close — safe to ignore
+        - (*database/sql.Rows).Close
+        # Tabwriter flush to stdout/stderr — errors are unactionable
+        - (*text/tabwriter.Writer).Flush
+        # json.Encoder.Encode in test HTTP handlers
+        - (*encoding/json.Encoder).Encode
+        # http.ResponseWriter.Write in test HTTP handlers
+        - (net/http.ResponseWriter).Write
+
+    staticcheck:
+      checks:
+        - all
+        - "-QF*"   # Quick-fix suggestions — not errors
+        - "-ST1000" # Package comments — not required for internal tools
+
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Exclude errcheck from test files — test helpers use simplified error handling
+      - path: _test\.go
+        linters:
+          - errcheck

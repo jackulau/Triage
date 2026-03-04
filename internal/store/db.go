@@ -17,7 +17,7 @@ type DB struct {
 // Open opens (or creates) a SQLite database at the given path and runs migrations.
 // Use ":memory:" for an in-memory database (useful for testing).
 func Open(path string) (*DB, error) {
-	dsn := path
+	var dsn string
 	if path != ":memory:" {
 		dsn = path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)"
 	} else {

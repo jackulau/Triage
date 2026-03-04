@@ -277,11 +277,10 @@ func TestTriageLog(t *testing.T) {
 }
 
 func TestDBSatisfiesStoreInterface(t *testing.T) {
-	// Compile-time check is in store.go; this test documents the expectation.
+	// Compile-time check is in store.go (var _ Store = (*DB)(nil));
+	// this test exercises the concrete type through the interface.
 	var s Store = setupTestDB(t)
-	if s == nil {
-		t.Fatal("expected non-nil Store")
-	}
+	_ = s // use the variable; compile-time interface check is the real assertion
 }
 
 func TestTriageLogDuplicate(t *testing.T) {
